@@ -138,7 +138,7 @@ h1 {
 .pipeline {
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 14px;
   margin: 0 0 16px;
   padding: 0;
@@ -206,11 +206,18 @@ h1 {
   font-size: 0.85rem;
 }
 
+/* Medium screens: pipeline in two rows of three */
+@media (max-width: 1000px) {
+  .pipeline { grid-template-columns: repeat(3, 1fr); }
+  .pipeline li:nth-child(3n)::after { display: none; }
+}
+
 /* Small screens: stack everything vertically */
 @media (max-width: 760px) {
   .hero { flex-direction: column; }
   .pipeline { grid-template-columns: 1fr; }
   .pipeline li:not(:last-child)::after {
+    display: block;
     content: "↓";
     right: auto;
     left: 50%;

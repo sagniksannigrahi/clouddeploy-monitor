@@ -22,11 +22,20 @@ COPY app.py .
 COPY templates/ templates/
 COPY static/ static/
 
+# Version details passed in by deploy.sh (docker build --build-arg ...).
+# Baking them into the image means a rolled-back image still reports its own version.
+ARG GIT_COMMIT=""
+ARG GIT_BRANCH="local"
+ARG BUILD_TIME=""
+ENV GIT_COMMIT=${GIT_COMMIT} \
+    GIT_BRANCH=${GIT_BRANCH} \
+    BUILD_TIME=${BUILD_TIME}
+
 # Run as a normal user instead of root (safer if the app is ever compromised).
 RUN useradd --create-home appuser
 USER appuser
 
-# Documents the default port. Render overrides PORT with its own value at runtime.
+# Documents the port the app listens on inside the container (override with -e PORT=...).
 EXPOSE 8080
 
 # Lets `docker ps` show whether the app is healthy. Uses Python because the

@@ -1,5 +1,6 @@
 # Python
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -7,6 +8,18 @@ __pycache__/
 # Secrets - never commit these
 .env
 .env.*
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+*deploy_key*
+.aws/
+credentials
+known_hosts
+
+# Build artifacts
+*.tar.gz
 
 # Editor / OS
 .vscode/

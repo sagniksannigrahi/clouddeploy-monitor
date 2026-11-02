@@ -16,5 +16,7 @@ test_app.py
 requirements-dev.txt
 README.md
 docs/
-render.yaml
 Dockerfile
+deploy.sh
+*.pem
+*.key

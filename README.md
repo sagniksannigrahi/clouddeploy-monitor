@@ -4,280 +4,360 @@
 
 **Automated Cloud-Native Application Deployment with Monitoring**
 
-A small Flask web app that is automatically tested, packaged as a Docker image, deployed to the cloud (Render) by a GitHub Actions pipeline, and monitored for downtime by UptimeRobot.
+A small Flask web app that is automatically tested by GitHub Actions, shipped over SSH to an **AWS EC2** server, run in a **Docker** container, and monitored for downtime by **UptimeRobot**.
+
+> In this README, replace `<EC2_PUBLIC_IP>` with your instance's current public IPv4 address.
 
 ---
 
-## 1. Introduction
+## 1. Project overview
 
-Every push to the `main` branch starts a pipeline: tests run, a Docker image is built and checked, and only if all of that succeeds is the new version deployed to Render. Once live, UptimeRobot calls the app's `/health` endpoint every 5 minutes and emails you if it stops answering.
+Every push to the `main` branch starts an automated pipeline:
+
+1. **Test:** pytest runs the test suite.
+2. **Build:** the Docker image is built and its `/health` endpoint is checked.
+3. **Ship:** the code is packaged and copied to the EC2 server with `scp`.
+4. **Deploy:** the server rebuilds the image and replaces the running container.
+5. **Verify:** a health check confirms the new version works. If it doesn't, the previous version is restored automatically.
+6. **Monitor:** UptimeRobot checks `http://<EC2_PUBLIC_IP>/health` every 5 minutes and emails you if it goes down.
 
 ## 2. Problem statement
 
-Deploying by hand is slow and error-prone. People forget to run tests, deploy broken code, and often find out the site is down only when a user complains. This project shows how a small team can avoid that with free tools:
-
-- **Automated testing** catches bugs before they reach users.
-- **Containers** make the app run the same way on a laptop and in the cloud.
-- **CI/CD** makes deployment repeatable and hands-off.
-- **Monitoring** detects outages and raises an alert within minutes.
+Deploying by hand (copying files, restarting servers) is slow and error-prone. It is easy to skip tests, ship broken code, or find out the site is down only when someone complains. This project shows how to remove those manual steps using free tools and a single small cloud server.
 
 ## 3. Objectives
 
 1. Run automated tests on every push to GitHub.
-2. Build a Docker image of the application.
-3. Deploy the application to a cloud platform automatically after tests pass.
-4. Serve the application on a public URL.
+2. Package the application as a Docker image.
+3. Deploy automatically to an AWS EC2 instance after tests pass.
+4. Serve the application on a public IP address (HTTP, port 80).
 5. Monitor availability through a health-check endpoint.
 6. Detect downtime and send email notifications.
 
 ## 4. Technology stack
 
-| Technology | Role in this project | Cost |
+| Technology | Role | Cost |
 |---|---|---|
-| Python 3.14 | Programming language | Free |
-| Flask | Web framework (routes `/` and `/health`) | Free |
-| Gunicorn | Production web server that runs Flask inside the container | Free |
+| Python 3.14 + Flask | Web application (`/`, `/health`, `/api/status`) | Free |
+| Gunicorn | Production web server inside the container | Free |
 | HTML / CSS | Dashboard UI (plus a few lines of plain JavaScript for the live health check) | Free |
-| pytest | Automated tests | Free |
-| Docker | Packages the app and its dependencies into an image | Free for personal and educational use |
+| pytest | Automated tests (15 tests) | Free |
+| Docker | Containerisation on the server and in CI | Free (Docker Engine) |
 | Git & GitHub | Version control and code hosting | Free |
-| GitHub Actions | CI/CD pipeline | Free (unlimited on public repos, 2,000 min/month on private repos) |
-| Render | Cloud hosting for the Docker container | Free web service (see limits below) |
+| GitHub Actions | CI/CD pipeline | Free for public repositories |
+| AWS EC2 (t3.micro, Ubuntu 26.04 LTS) | Cloud server | Uses AWS Academy credits while running |
 | UptimeRobot | Uptime monitoring and email alerts | Free plan (50 monitors, 5-minute checks) |
 
-## 5. System architecture
+## 5. Architecture
 
 ```mermaid
 flowchart LR
-    Dev([Developer]) -->|git push| GH[GitHub repository]
+    Dev["💻 VS Code<br/>(developer)"] -->|git push| GH["GitHub<br/>repository"]
     GH -->|triggers| GA
 
-    subgraph GA[GitHub Actions pipeline]
-        T[1. Run pytest] --> B[2. Build and test Docker image] --> D[3. Call Render deploy hook]
+    subgraph GA["GitHub Actions"]
+        T["pytest"] --> B["Docker build<br/>+ health check"] --> P["Package<br/>(git archive)"]
     end
 
-    D -->|HTTPS POST, secret URL| R[Render: builds Dockerfile and runs container]
-    R --> App[CloudDeploy Monitor\nhttps://...onrender.com]
-    User([Users]) -->|browser| App
-    UR[UptimeRobot] -->|GET /health every 5 min| App
-    UR -->|email when down or back up| Dev
+    P -->|"SSH / SCP<br/>(verified host key)"| EC2
+
+    subgraph EC2["AWS EC2 · t3.micro · Ubuntu"]
+        DS["deploy.sh<br/>build · swap · verify · rollback"] --> C["Docker container<br/>Gunicorn :8080"]
+        C --> F["Flask app<br/>/ · /health · /api/status"]
+    end
+
+    Users(["🌍 Users"]) -->|"HTTP :80"| C
+    UR["UptimeRobot"] -->|"GET /health every 5 min"| C
+    UR -->|"email alert<br/>down / up"| Dev
 ```
 
-How the pieces connect:
-
-1. You push code to `main` on GitHub.
-2. GitHub Actions runs the tests. If any test fails, the pipeline stops.
-3. It builds the Docker image and checks that the container answers `/health`.
-4. It calls Render's secret **deploy hook** URL (stored as a GitHub Secret), asking Render to deploy that exact commit.
-5. Render builds the Dockerfile, starts the container, waits for `/health` to return 200, then switches traffic to the new version.
-6. UptimeRobot checks `/health` every 5 minutes and emails you if it fails.
+Port mapping: the internet reaches **port 80** on EC2. Docker forwards it to Gunicorn on **port 8080** inside the container. Port 8080 is never opened in the security group.
 
 ## 6. Project structure
 
 ```
 cloud-deployment/
-├── app.py                    # Flask app: "/" dashboard and "/health" API
-├── templates/
-│   └── index.html            # Dashboard page (HTML + small health-check script)
-├── static/
-│   └── style.css             # Dashboard styling
-├── test_app.py               # pytest test suite (11 tests)
+├── app.py                    # Flask app: "/" dashboard, "/health", "/api/status"
+├── templates/index.html      # Dashboard page
+├── static/style.css          # Dashboard styling
+├── test_app.py               # pytest suite (15 tests)
 ├── requirements.txt          # Runtime dependencies (Flask, Gunicorn)
-├── requirements-dev.txt      # Runtime dependencies + pytest (used locally and in CI)
-├── Dockerfile                # How to build the container image
+├── requirements-dev.txt      # + pytest, for local development and CI
+├── Dockerfile                # Container image definition
 ├── .dockerignore             # Files kept out of the image
-├── render.yaml               # Render Blueprint (service definition)
-├── .github/
-│   └── workflows/
-│       └── deploy.yml        # GitHub Actions CI/CD pipeline
+├── deploy.sh                 # Runs on EC2: build, swap container, health check, rollback
+├── .github/workflows/
+│   └── deploy.yml            # GitHub Actions CI/CD pipeline
 ├── docs/screenshots/         # Screenshots for this README
-├── .gitignore
+├── .gitignore                # Keeps .venv, keys, credentials and caches out of Git
 └── README.md
 ```
 
-## 7. Installation
+## 7. Local installation
 
-Requirements: macOS/Linux/Windows with **Python 3.12+**, **Git**, and (optionally) **Docker Desktop**.
+Requirements: Python 3.12+, Git, and Docker Desktop (optional, for container testing).
 
 ```bash
 git clone https://github.com/sagniksannigrahi/clouddeploy-monitor.git
 cd clouddeploy-monitor
-
-python3 -m venv .venv            # create an isolated Python environment
-source .venv/bin/activate        # activate it (Windows: .venv\Scripts\activate)
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 ```
 
-## 8. Running locally
+## 8. Local execution
 
 ```bash
 source .venv/bin/activate
 python app.py
 ```
 
-Open <http://localhost:8080> for the dashboard and <http://localhost:8080/health> for the health API.
+| URL | What it shows |
+|---|---|
+| <http://localhost:8080/> | Dashboard |
+| <http://localhost:8080/health> | `{"application":"CloudDeploy Monitor","status":"healthy"}` |
+| <http://localhost:8080/api/status> | Version, deployment and runtime details (no secrets) |
 
-Expected `/health` response:
-
-```json
-{ "status": "healthy", "application": "CloudDeploy Monitor" }
-```
-
-> **macOS note:** port 5000 is used by AirPlay Receiver, so this project uses **8080**. Use another port with `PORT=9000 python app.py`.
-
-To run with the same production server used in Docker:
-
-```bash
-gunicorn --bind 0.0.0.0:8080 app:app
-```
+> macOS uses port 5000 for AirPlay, so this project defaults to **8080**. Use another port with `PORT=9000 python app.py`.
 
 ## 9. Docker
 
 ```bash
-# Build the image
 docker build -t clouddeploy-monitor .
-
-# Run it (container port 8080 -> your machine's port 8080)
-docker run --rm -p 8080:8080 clouddeploy-monitor
-
-# Simulate Render, which provides its own PORT (default 10000)
-docker run --rm -e PORT=10000 -p 8080:10000 clouddeploy-monitor
+docker run --rm -p 8080:8080 clouddeploy-monitor     # open http://localhost:8080
 ```
 
-Check the container's built-in health check: `docker ps` shows `(healthy)` after about 30 seconds.
+How the Dockerfile is set up:
 
-What the Dockerfile does:
-
-- Uses `python:3.14-slim`, a small official base image.
-- Installs dependencies **before** copying code, so Docker can reuse the cached layer when only code changes.
+- `python:3.14-slim` base image (small, official).
+- Dependencies are installed before the code is copied, so rebuilds reuse the cached layer.
 - Runs as a non-root user (`appuser`).
-- Starts **Gunicorn** on `0.0.0.0:${PORT}`, so it works locally (8080) and on Render (which sets `PORT`).
+- Gunicorn binds `0.0.0.0:${PORT}` (default 8080) with 2 workers, which is light enough for a t3.micro.
+- A `HEALTHCHECK` lets `docker ps` show `(healthy)`.
+- Build arguments (`GIT_COMMIT`, `GIT_BRANCH`, `BUILD_TIME`) are baked into the image so the dashboard shows which version is running.
 
-## 10. Testing
+On the server, `deploy.sh` starts the container with:
+
+| Option | Why |
+|---|---|
+| `--restart unless-stopped` | Restarts after crashes and after the EC2 server reboots |
+| `-p 80:8080` | Public HTTP port 80 → app port 8080 |
+| `--memory 300m` | Prevents the app from using up the t3.micro's 1 GB RAM |
+| `--log-opt max-size=10m --log-opt max-file=3` | Logs are rotated so they can't fill the disk |
+
+## 10. AWS EC2 setup
+
+### Instance
+
+| Setting | Value |
+|---|---|
+| AMI | Ubuntu Server 26.04 LTS |
+| Instance type | t3.micro (2 vCPU, 1 GB RAM) |
+| Region | us-east-1 |
+| Storage | Default 8 GB gp3 is enough |
+| Key pair | Your own key pair (keep the `.pem` file safe) |
+
+### Security group (inbound rules)
+
+| Type | Port | Source | Purpose |
+|---|---|---|---|
+| SSH | 22 | See note below | Admin access and GitHub Actions deploys |
+| HTTP | 80 | `0.0.0.0/0` | Public website and UptimeRobot |
+
+Nothing else is opened. In particular, Flask/Gunicorn's port 8080 is **not** public.
+
+> **SSH source and GitHub Actions:** GitHub-hosted runners connect from changing IP addresses. If port 22 allows only your IP, the automatic deploy step can't connect. In that case, either allow `0.0.0.0/0` on port 22 (login is key-only and password login is disabled) or deploy manually from your Mac (section 14).
+
+### One-time server preparation
+
+Run on the server over SSH. It installs only Docker Engine and the folder the app needs:
 
 ```bash
-pytest -v
+sudo apt-get update
+sudo apt-get install -y docker.io        # Docker Engine from Ubuntu's repository
+sudo systemctl enable --now docker       # start Docker now and on every boot
+sudo usermod -aG docker ubuntu           # let the ubuntu user run docker (log out/in after)
+sudo mkdir -p /opt/clouddeploy
+sudo chown ubuntu:ubuntu /opt/clouddeploy
 ```
 
-The 11 tests in `test_app.py` cover:
+### Cost tips for AWS Academy
 
-| Area | What is checked |
+- Use only this one t3.micro instance. No Elastic IP, load balancer or NAT gateway is needed.
+- **Stopping** the instance saves credits, but its **public IP changes** when it starts again. After a restart, update the `EC2_HOST` and `EC2_KNOWN_HOSTS` secrets and the UptimeRobot URL.
+- `deploy.sh` deletes old Docker images after each deploy, keeping only the current and previous ones to save disk space.
+
+## 11. SSH connectivity
+
+```bash
+chmod 400 ~/Downloads/<your-key>.pem                 # SSH refuses keys others can read
+ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP>
+```
+
+The first time you connect, SSH shows the server's host key fingerprint. To confirm it is really your server, compare it with the fingerprint in **EC2 → Instance → Actions → Monitor and troubleshoot → Get system log** (look for `BEGIN SSH HOST KEY FINGERPRINTS`).
+
+If it fails:
+
+| Symptom | Likely cause |
 |---|---|
-| Homepage | Returns 200, is HTML, shows the app name and every dashboard section, stylesheet is served |
-| Health endpoint | Returns 200, is JSON, matches the exact expected body |
-| Behaviour | Unknown page gives 404, `POST /health` gives 405, dashboard shows "Running locally" by default and Render details (short commit hash, Production) when Render's environment variables are present |
+| `Operation timed out` | Security group doesn't allow port 22 from your IP, or the IP has changed |
+| `Permission denied (publickey)` | Wrong key file or username (must be `ubuntu`) |
+| `UNPROTECTED PRIVATE KEY FILE` | Run `chmod 400` on the key |
 
-## 11. CI/CD with GitHub Actions
+## 12. GitHub repository setup
 
-The pipeline lives in [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).
+```bash
+git init -b main
+git add .
+git commit -m "Initial commit"
+gh repo create clouddeploy-monitor --public --source . --push
+```
+
+`.gitignore` makes sure `.venv/`, `.env`, `*.pem` and other keys, AWS credentials, `known_hosts` and cache files are never committed.
+
+## 13. GitHub Actions CI/CD
+
+Workflow file: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
 ```
-push to main ──► test ──► docker ──► deploy
-                 (pytest)  (build +   (Render deploy hook,
-                           /health     then wait until the
-                           check)      new commit is live)
+push to main ─► test ─► docker ─► deploy
+                pytest  build +   scp package → ssh: deploy.sh
+                        /health   → verify public URL shows the new commit
 ```
 
 | Trigger | test | docker | deploy |
 |---|---|---|---|
 | Push to `main` | ✅ | ✅ | ✅ |
-| Pull request to `main` | ✅ | ✅ | ❌ (never deploys) |
+| Pull request | ✅ | ✅ | ❌ never deploys |
 | Manual "Run workflow" on `main` | ✅ | ✅ | ✅ |
 
-Key points:
+### Required repository secrets
 
-- `needs:` links the jobs. If `test` fails, `docker` and `deploy` do not run.
-- The deploy hook URL is read from the **`RENDER_DEPLOY_HOOK` GitHub Secret** and is never written in the code. GitHub masks it in logs.
-- The hook is called with `ref=<commit SHA>`, so Render deploys the exact commit that passed the tests.
-- If the optional **`RENDER_APP_URL` variable** is set, the pipeline polls the live site until the dashboard shows the new commit hash. That makes a green "deploy" job mean the new version is live, not just requested.
-- If the secret has not been set yet, the deploy job prints a warning and skips deployment instead of pretending to deploy.
+GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**
 
-### Automatic deploy (Render) vs. deploy via GitHub Actions
+| Secret | Value |
+|---|---|
+| `EC2_HOST` | The instance's current public IPv4, e.g. `54.x.x.x` |
+| `EC2_USER` | `ubuntu` |
+| `EC2_SSH_KEY` | The full contents of a **private** key allowed to log in (see below) |
+| `EC2_KNOWN_HOSTS` | The server's verified host key line (see below) |
 
-| | Render auto-deploy | Deploy hook from GitHub Actions (this project) |
-|---|---|---|
-| Who starts the deploy | Render, on every commit it sees | The pipeline, only after tests and the Docker check pass |
-| Broken commit pushed | Gets deployed (unless "After CI checks pass" is chosen) | Never deployed |
-| Setup | Just connect the repo | Needs the deploy hook stored as a GitHub Secret |
+**Use a dedicated deploy key, not your personal `.pem`.** You can then revoke GitHub's access without touching your own key:
 
-This project sets `autoDeployTrigger: "off"` in `render.yaml` so **only** the pipeline deploys. That avoids double deploys and untested deploys.
+```bash
+# On your Mac: create a key used only by GitHub Actions
+ssh-keygen -t ed25519 -N "" -C "github-actions-deploy" -f ~/.ssh/clouddeploy_deploy_key
 
-## 12. Cloud deployment with Render
+# Allow it to log in to the server
+ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> \
+  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/clouddeploy_deploy_key.pub
 
-Render's **free** web service is enough for this project. Limits on the free plan:
+# Store the secrets (values are read from files, never printed)
+gh secret set EC2_HOST --body "<EC2_PUBLIC_IP>"
+gh secret set EC2_USER --body "ubuntu"
+gh secret set EC2_SSH_KEY < ~/.ssh/clouddeploy_deploy_key
+ssh-keyscan -t ed25519 <EC2_PUBLIC_IP> > /tmp/ec2_known_hosts
+ssh-keygen -lf /tmp/ec2_known_hosts      # compare with the EC2 system log fingerprint!
+gh secret set EC2_KNOWN_HOSTS < /tmp/ec2_known_hosts
+```
 
-- It **spins down after 15 minutes without traffic**, and the next request takes about a minute to wake it. UptimeRobot's 5-minute checks keep it awake.
-- 750 free instance hours per workspace per month. That covers one service running all month.
-- Files written at runtime are not kept (this app writes none).
+How the workflow keeps the connection secure:
 
-### Steps
+- `StrictHostKeyChecking yes` with only the stored host key, so SSH refuses to connect to an impostor server.
+- The private key exists on the runner only during the job and is deleted at the end (`if: always()`).
+- GitHub masks secret values in logs.
+- No third-party deploy actions; only `ssh` and `scp`.
 
-1. **Create an account** at <https://render.com> and choose "Sign up with GitHub". No credit card is needed for free services.
-2. **Create the service from the Blueprint:**
-   - Dashboard → **New** → **Blueprint**.
-   - Connect GitHub and give Render access to the `clouddeploy-monitor` repository.
-   - Render reads `render.yaml` and shows one service, `clouddeploy-monitor` (Docker, Free, health check `/health`). Click **Apply / Deploy Blueprint**.
-   - *Alternative (manual):* **New** → **Web Service** → pick the repo → Language **Docker** → Instance type **Free** → Advanced → Health Check Path `/health`, and set Auto-Deploy to **Off**.
-3. **Environment variables:** none are required. Render sets `PORT` automatically. Optional: `STATUS_PAGE_URL` (your UptimeRobot public status page, which the dashboard will link to).
-4. **Wait for the first deploy.** The **Logs** tab shows the Docker build, then `Listening at: http://0.0.0.0:10000`.
-5. **Get the public URL** at the top of the service page, e.g. `https://clouddeploy-monitor.onrender.com` (yours may have a suffix).
-6. **Verify it works:**
-   ```bash
-   curl https://YOUR-APP.onrender.com/health
-   # {"application":"CloudDeploy Monitor","status":"healthy"}
-   ```
-   The dashboard should show **Deployed on Render**, a **Production** badge, and the commit hash.
-7. **Connect GitHub Actions to Render:**
-   - In Render: service → **Settings** → **Deploy Hook** → copy the URL. Treat it like a password.
-   - In your terminal (paste the URL when prompted, so it never appears in your shell history):
-     ```bash
-     gh secret set RENDER_DEPLOY_HOOK
-     gh variable set RENDER_APP_URL --body "https://YOUR-APP.onrender.com"
-     ```
-     Or on GitHub: repo → **Settings** → **Secrets and variables** → **Actions**.
-8. **Test the pipeline:** push any commit to `main` (or Actions tab → **CI/CD** → **Run workflow**). All three jobs should go green and the dashboard should show the new commit hash.
+If a secret is missing, the deploy job fails with a clear message listing which ones. It never reports success without deploying.
 
-If the hook URL ever leaks, use **Regenerate Hook** in Render and update the secret.
+## 14. Deployment procedure
 
-## 13. Monitoring with UptimeRobot
+**Automatic:** push to `main`. The deploy job:
 
-The UptimeRobot free plan includes 50 monitors, 5-minute check intervals, and email alerts.
+1. Packs the committed files with `git archive` (never local junk or keys).
+2. Copies the package to `/tmp` on EC2 with `scp`.
+3. Over `ssh`, unpacks it into `/opt/clouddeploy/app` and runs `deploy.sh <commit> main "GitHub Actions"`.
+4. `deploy.sh` builds the new image while the old container keeps running, swaps the containers, and polls `/health` for up to 40 seconds.
+   - **Healthy:** the old image is kept as a rollback target, and older ones are deleted.
+   - **Unhealthy:** the new container is removed, the previous version is started again, and the job fails.
+5. The runner fetches `http://<EC2_PUBLIC_IP>/api/status` and checks that it reports the new commit.
 
-1. **Create an account** at <https://uptimerobot.com> and verify your email.
-2. **Add a monitor:** **+ New monitor** → type **HTTP(s)**.
-   - **URL:** `https://YOUR-APP.onrender.com/health`
-   - **Friendly name:** `CloudDeploy Monitor`
-   - **Interval:** 5 minutes (the free plan minimum)
-3. **Email alerts:** under *How will we notify you?*, tick your account email. You get one email when the site goes **down** and another when it is **up** again.
-4. **Save.** The monitor turns green after its first check.
-5. **Uptime and downtime history:** click the monitor to see uptime percentage, response times, and an incident log of every outage with its start time and duration.
-6. *(Optional)* **Status page:** **Status pages** → create a public page with this monitor, then set its URL as `STATUS_PAGE_URL` in Render.
+**Manual** (from your Mac, e.g. if SSH is limited to your IP):
 
-> *Tip:* for a stricter check, use a **Keyword** monitor on the same URL, looking for the keyword `healthy`. It alerts if the page loads but the body is wrong.
+```bash
+git archive --format=tar.gz -o /tmp/app.tar.gz HEAD
+scp -i ~/Downloads/<your-key>.pem /tmp/app.tar.gz ubuntu@<EC2_PUBLIC_IP>:/tmp/
+ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> \
+  "rm -rf /opt/clouddeploy/app && mkdir -p /opt/clouddeploy/app && tar -xzf /tmp/app.tar.gz -C /opt/clouddeploy/app && cd /opt/clouddeploy/app && bash deploy.sh $(git rev-parse HEAD) main Manual"
+```
 
-### Testing that alerts work
+**Useful commands on the server:**
 
-1. In Render, open the service → **Settings** → **Suspend Web Service**.
-2. Within about 5–10 minutes, UptimeRobot should mark the monitor **Down** and send an email.
-3. Click **Resume Web Service** and wait for the "Up" email.
-4. The incident now appears in the monitor's history.
+```bash
+docker ps                                   # is it running and healthy?
+docker logs -f clouddeploy-monitor          # live application logs
+docker stats --no-stream                    # memory/CPU usage
+curl http://localhost/health                # local health check
+df -h / && free -h                          # disk and RAM
+```
 
-Note: on the free plan a sleeping service wakes up when UptimeRobot calls it, so normal spin-down does **not** count as downtime. A cold start can take up to about a minute and may sometimes show as a slow response.
+## 15. UptimeRobot monitoring
 
-## 14. Screenshots
+The UptimeRobot free plan includes 50 monitors, 5-minute intervals, and email alerts. These steps require your own account.
+
+1. Sign up at <https://uptimerobot.com> and verify your email.
+2. **+ New monitor** → type **HTTP(s)**.
+3. **URL:** `http://<EC2_PUBLIC_IP>/health`. **Name:** `CloudDeploy Monitor`. **Interval:** 5 minutes.
+4. Under notifications, tick your **email**. You get an email when it goes down and another when it is back up.
+5. Save. The monitor turns green after the first check.
+6. Open the monitor to see **uptime %**, **response times** and the **incident history**.
+7. *(Optional)* Create a public **Status page**. If you put its URL in the `STATUS_PAGE_URL` environment variable, the dashboard links to it.
+
+> For a stricter check, use a **Keyword** monitor on the same URL with keyword `healthy`.
+
+### Test the alert (for your demo)
+
+```bash
+ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> "docker stop clouddeploy-monitor"
+# wait 5-10 minutes → UptimeRobot marks it DOWN and emails you
+ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> "docker start clouddeploy-monitor"
+# next check → UP email; the incident appears in the history
+```
+
+`docker stop` is used because `--restart unless-stopped` would otherwise bring a crashed container straight back.
+
+> If the EC2 public IP changes (after stop/start), edit the monitor's URL.
+
+## 16. Testing
+
+```bash
+pytest -v
+```
+
+| Area | Tests |
+|---|---|
+| Homepage | 200 status, HTML content type, all dashboard sections present, stylesheet served |
+| `/health` | 200 status, JSON content type, exact expected body |
+| `/api/status` | 200 JSON, required fields present, reports EC2 details when deployed, never leaks secrets, IPs or instance IDs |
+| Behaviour | 404 for unknown pages, 405 for `POST /health`, local vs. EC2 display |
+
+`deploy.sh` was also tested end-to-end with Docker: a good release goes live, and a deliberately broken release fails its health check and is automatically rolled back.
+
+## 17. Screenshots
 
 | Screen | Image |
 |---|---|
-| Dashboard (local) | ![Dashboard running locally](docs/screenshots/dashboard-local.png) |
-| Dashboard on Render | *Add after deployment: `docs/screenshots/dashboard-render.png`* |
-| GitHub Actions run | *Add after first green run: `docs/screenshots/github-actions.png`* |
-| UptimeRobot monitor | *Add after setup: `docs/screenshots/uptimerobot.png`* |
+| Dashboard (local) | ![Dashboard](docs/screenshots/dashboard-local.png) |
+| Dashboard on EC2 | *add `docs/screenshots/dashboard-ec2.png`* |
+| GitHub Actions run | *add `docs/screenshots/github-actions.png`* |
+| `docker ps` on EC2 | *add `docs/screenshots/docker-ps.png`* |
+| UptimeRobot monitor | *add `docs/screenshots/uptimerobot.png`* |
 
-## 15. Future enhancements
+## 18. Future enhancements
 
-- Publish the Docker image to GitHub Container Registry and deploy that image, so the exact image tested in CI is what runs in production.
-- Add a staging environment and promote to production after manual approval.
-- Add linting (e.g. `ruff`) and test coverage reporting to the pipeline.
-- Send alerts to Slack or Discord in addition to email.
-- Report more from `/health` (e.g. version, uptime) and add structured JSON logging.
-- Add a custom domain with HTTPS on Render.
+- HTTPS with a domain name and a free Let's Encrypt certificate (via a reverse proxy such as Caddy).
+- Build the image once in CI, push it to a registry (GitHub Container Registry), and pull it on EC2, so the server doesn't spend CPU building.
+- Zero-downtime deploys (start the new container on a second port, then switch traffic).
+- Slack or Discord alerts in addition to email.
+- Linting (`ruff`) and test coverage reports in the pipeline.
+- Infrastructure as code for the EC2 setup, once the project needs more than one server.

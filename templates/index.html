@@ -14,11 +14,11 @@
         <p class="eyebrow">Cloud-native deployment with monitoring</p>
         <h1>{{ app_name }}</h1>
         <p class="lead">
-          A Flask app that is tested, containerised with Docker, deployed to Render by a
-          GitHub Actions pipeline, and watched around the clock by UptimeRobot.
+          A Flask app that is tested by GitHub Actions, shipped over SSH to an AWS EC2
+          server, run in a Docker container, and watched around the clock by UptimeRobot.
         </p>
       </div>
-      <span class="badge {{ 'badge-live' if deploy.platform == 'Render' else 'badge-local' }}">
+      <span class="badge {{ 'badge-live' if deploy.environment == 'Production' else 'badge-local' }}">
         {{ deploy.environment }}
       </span>
     </header>
@@ -38,25 +38,29 @@
 
       <article class="card">
         <h2>Deployment status</h2>
-        {% if deploy.platform == 'Render' %}
-          <p class="status"><span class="dot dot-ok"></span>Deployed on Render</p>
+        {% if deploy.environment == 'Production' %}
+          <p class="status"><span class="dot dot-ok"></span>Deployed on {{ deploy.platform }}</p>
         {% else %}
           <p class="status"><span class="dot dot-idle"></span>Running locally</p>
         {% endif %}
         <dl class="facts">
-          <dt>Platform</dt><dd>{{ deploy.platform }}</dd>
-          <dt>Service</dt><dd>{{ deploy.service }}</dd>
-          {% if deploy.url %}<dt>URL</dt><dd><a href="{{ deploy.url }}">{{ deploy.url }}</a></dd>{% endif %}
+          <dt>Commit</dt><dd><code>{{ deploy.commit }}</code></dd>
+          <dt>Branch</dt><dd>{{ deploy.branch }}</dd>
+          <dt>Deployed by</dt><dd>{{ deploy.deployed_by }}</dd>
+          <dt>Went live</dt><dd id="started-at" data-iso="{{ deploy.started_at }}">{{ deploy.started_at }}</dd>
+          <dt>Uptime</dt><dd id="uptime">–</dd>
         </dl>
       </article>
 
       <article class="card">
-        <h2>Last deployment</h2>
+        <h2>Cloud infrastructure</h2>
         <dl class="facts">
-          <dt>Commit</dt><dd><code>{{ deploy.commit }}</code></dd>
-          <dt>Branch</dt><dd>{{ deploy.branch }}</dd>
-          <dt>Went live</dt><dd id="started-at" data-iso="{{ deploy.started_at }}">{{ deploy.started_at }}</dd>
-          <dt>Uptime</dt><dd id="uptime">–</dd>
+          <dt>Provider</dt><dd>{{ deploy.platform }}</dd>
+          <dt>Region</dt><dd>{{ deploy.region }}</dd>
+          <dt>Zone</dt><dd>{{ deploy.zone }}</dd>
+          <dt>Instance</dt><dd>{{ deploy.instance_type }}</dd>
+          <dt>Host OS</dt><dd>{{ deploy.os }}</dd>
+          <dt>Runtime</dt><dd>Docker + Gunicorn</dd>
         </dl>
       </article>
 
@@ -64,24 +68,26 @@
         <h2>Monitoring</h2>
         <dl class="facts">
           <dt>Service</dt><dd>UptimeRobot</dd>
-          <dt>Checks</dt><dd><code>/health</code> over HTTPS</dd>
+          <dt>Checks</dt><dd><code>GET /health</code></dd>
           <dt>Interval</dt><dd>Every 5 minutes</dd>
           <dt>Alerts</dt><dd>Email on downtime</dd>
         </dl>
-        {% if deploy.status_page %}
-          <p class="muted"><a href="{{ deploy.status_page }}">View public status page →</a></p>
-        {% endif %}
+        <p class="muted">
+          Status API: <a href="/api/status"><code>/api/status</code></a>
+          {% if deploy.status_page %}· <a href="{{ deploy.status_page }}">Public status page →</a>{% endif %}
+        </p>
       </article>
     </section>
 
     <section class="panel">
-      <h2>Deployment pipeline</h2>
+      <h2>CI/CD pipeline</h2>
       <ol class="pipeline">
         <li><span class="step-icon">1</span><strong>Push</strong><small>Code pushed to GitHub <code>main</code></small></li>
-        <li><span class="step-icon">2</span><strong>Test</strong><small>pytest runs in GitHub Actions</small></li>
-        <li><span class="step-icon">3</span><strong>Build</strong><small>Docker image built and smoke-tested</small></li>
-        <li><span class="step-icon">4</span><strong>Deploy</strong><small>Render deploy hook triggered</small></li>
-        <li><span class="step-icon">5</span><strong>Monitor</strong><small>UptimeRobot checks <code>/health</code></small></li>
+        <li><span class="step-icon">2</span><strong>Test</strong><small>pytest and a Docker build run in GitHub Actions</small></li>
+        <li><span class="step-icon">3</span><strong>Ship</strong><small>Source package copied to EC2 over SSH/SCP</small></li>
+        <li><span class="step-icon">4</span><strong>Deploy</strong><small>Image rebuilt and container replaced on EC2</small></li>
+        <li><span class="step-icon">5</span><strong>Verify</strong><small>Health check passes, otherwise rollback</small></li>
+        <li><span class="step-icon">6</span><strong>Monitor</strong><small>UptimeRobot checks <code>/health</code></small></li>
       </ol>
       <p class="muted">If any step fails, the steps after it do not run, so broken code never reaches production.</p>
     </section>
@@ -94,9 +100,10 @@
         <li><strong>HTML / CSS</strong><small>Dashboard UI</small></li>
         <li><strong>pytest</strong><small>Automated tests</small></li>
         <li><strong>Docker</strong><small>Containerisation</small></li>
-        <li><strong>GitHub</strong><small>Source control</small></li>
+        <li><strong>Git &amp; GitHub</strong><small>Source control</small></li>
         <li><strong>GitHub Actions</strong><small>CI/CD pipeline</small></li>
-        <li><strong>Render</strong><small>Cloud hosting</small></li>
+        <li><strong>AWS EC2</strong><small>Cloud server</small></li>
+        <li><strong>Ubuntu</strong><small>Server operating system</small></li>
         <li><strong>UptimeRobot</strong><small>Uptime monitoring</small></li>
       </ul>
     </section>

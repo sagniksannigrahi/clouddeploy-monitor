@@ -28,8 +28,8 @@ def test_homepage_is_html(client):
 def test_homepage_shows_app_name_and_sections(client):
     page = client.get("/").get_data(as_text=True)
     assert "CloudDeploy Monitor" in page
-    for section in ["Application health", "Deployment status", "Last deployment",
-                    "Monitoring", "Deployment pipeline", "Technology stack"]:
+    for section in ["Application health", "Deployment status", "Cloud infrastructure",
+                    "Monitoring", "CI/CD pipeline", "Technology stack"]:
         assert section in page
 
 
@@ -71,19 +71,70 @@ def test_health_rejects_post(client):
     assert response.status_code == 405  # Method Not Allowed
 
 
-def test_homepage_shows_local_mode_when_not_on_render(client, monkeypatch):
-    monkeypatch.delenv("RENDER", raising=False)
+# Environment variables that only exist on the EC2 deployment.
+EC2_ENV = {
+    "CLOUD_PROVIDER": "AWS EC2",
+    "CLOUD_REGION": "us-east-1",
+    "CLOUD_ZONE": "us-east-1a",
+    "CLOUD_INSTANCE_TYPE": "t3.micro",
+    "GIT_COMMIT": "abc1234def5678",
+    "GIT_BRANCH": "main",
+    "DEPLOYED_BY": "GitHub Actions",
+}
+
+
+def test_homepage_shows_local_mode_by_default(client, monkeypatch):
+    for name in EC2_ENV:
+        monkeypatch.delenv(name, raising=False)
     page = client.get("/").get_data(as_text=True)
     assert "Running locally" in page
+    assert "Development" in page
 
 
-def test_homepage_shows_render_details_when_on_render(client, monkeypatch):
-    # Pretend to be on Render by setting the variables Render provides.
-    monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setenv("RENDER_GIT_COMMIT", "abc1234def5678")
-    monkeypatch.setenv("RENDER_GIT_BRANCH", "main")
+def test_homepage_shows_ec2_details_when_deployed(client, monkeypatch):
+    for name, value in EC2_ENV.items():
+        monkeypatch.setenv(name, value)
     page = client.get("/").get_data(as_text=True)
-    assert "Deployed on Render" in page
-    assert "abc1234" in page          # short commit hash
-    assert "abc1234def5678" not in page  # full hash is not shown
+    assert "Deployed on AWS EC2" in page
     assert "Production" in page
+    assert "us-east-1" in page and "t3.micro" in page
+    assert "abc1234" in page             # short commit hash
+    assert "abc1234def5678" not in page  # full hash is not shown
+
+
+# ---------- Status API ----------
+
+def test_status_api_returns_200_json(client):
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    assert response.is_json
+
+
+def test_status_api_has_expected_fields(client):
+    data = client.get("/api/status").get_json()
+    assert data["application"] == "CloudDeploy Monitor"
+    assert data["status"] == "healthy"
+    for key in ["platform", "region", "instance_type", "commit", "branch", "deployed_by"]:
+        assert key in data["deployment"]
+    assert data["runtime"]["uptime_seconds"] >= 0
+
+
+def test_status_api_reports_ec2_deployment(client, monkeypatch):
+    for name, value in EC2_ENV.items():
+        monkeypatch.setenv(name, value)
+    data = client.get("/api/status").get_json()
+    assert data["environment"] == "Production"
+    assert data["deployment"]["platform"] == "AWS EC2"
+    assert data["deployment"]["commit"] == "abc1234"
+    assert data["deployment"]["deployed_by"] == "GitHub Actions"
+
+
+def test_status_api_does_not_leak_sensitive_values(client, monkeypatch):
+    # Even if secrets exist in the environment, the API must never echo them.
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "super-secret-value")
+    monkeypatch.setenv("EC2_SSH_KEY", "-----BEGIN OPENSSH PRIVATE KEY-----")
+    body = client.get("/api/status").get_data(as_text=True)
+    assert "super-secret-value" not in body
+    assert "PRIVATE KEY" not in body
+    for word in ["instance_id", "private_ip", "public_ip", "account"]:
+        assert word not in body
