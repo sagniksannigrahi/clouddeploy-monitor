@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Cloud-native deployment with monitoring</p>
+        <h1>{{ app_name }}</h1>
+        <p class="lead">
+          A Flask app that is tested, containerised with Docker, deployed to Render by a
+          GitHub Actions pipeline, and watched around the clock by UptimeRobot.
+        </p>
+      </div>
+      <span class="badge {{ 'badge-live' if deploy.platform == 'Render' else 'badge-local' }}">
+        {{ deploy.environment }}
+      </span>
+    </header>
+
+    <section class="cards" aria-label="Status overview">
+      <article class="card">
+        <h2>Application health</h2>
+        <p class="status">
+          <span class="dot dot-pending" id="health-dot"></span>
+          <span id="health-text">Checking…</span>
+        </p>
+        <p class="muted">
+          Live result of <a href="/health"><code>GET /health</code></a>,
+          refreshed every 30&nbsp;s. Response time: <span id="health-latency">–</span>
+        </p>
+      </article>
+
+      <article class="card">
+        <h2>Deployment status</h2>
+        {% if deploy.platform == 'Render' %}
+          <p class="status"><span class="dot dot-ok"></span>Deployed on Render</p>
+        {% else %}
+          <p class="status"><span class="dot dot-idle"></span>Running locally</p>
+        {% endif %}
+        <dl class="facts">
+          <dt>Platform</dt><dd>{{ deploy.platform }}</dd>
+          <dt>Service</dt><dd>{{ deploy.service }}</dd>
+          {% if deploy.url %}<dt>URL</dt><dd><a href="{{ deploy.url }}">{{ deploy.url }}</a></dd>{% endif %}
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Last deployment</h2>
+        <dl class="facts">
+          <dt>Commit</dt><dd><code>{{ deploy.commit }}</code></dd>
+          <dt>Branch</dt><dd>{{ deploy.branch }}</dd>
+          <dt>Went live</dt><dd id="started-at" data-iso="{{ deploy.started_at }}">{{ deploy.started_at }}</dd>
+          <dt>Uptime</dt><dd id="uptime">–</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Monitoring</h2>
+        <dl class="facts">
+          <dt>Service</dt><dd>UptimeRobot</dd>
+          <dt>Checks</dt><dd><code>/health</code> over HTTPS</dd>
+          <dt>Interval</dt><dd>Every 5 minutes</dd>
+          <dt>Alerts</dt><dd>Email on downtime</dd>
+        </dl>
+        {% if deploy.status_page %}
+          <p class="muted"><a href="{{ deploy.status_page }}">View public status page →</a></p>
+        {% endif %}
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Deployment pipeline</h2>
+      <ol class="pipeline">
+        <li><span class="step-icon">1</span><strong>Push</strong><small>Code pushed to GitHub <code>main</code></small></li>
+        <li><span class="step-icon">2</span><strong>Test</strong><small>pytest runs in GitHub Actions</small></li>
+        <li><span class="step-icon">3</span><strong>Build</strong><small>Docker image built and smoke-tested</small></li>
+        <li><span class="step-icon">4</span><strong>Deploy</strong><small>Render deploy hook triggered</small></li>
+        <li><span class="step-icon">5</span><strong>Monitor</strong><small>UptimeRobot checks <code>/health</code></small></li>
+      </ol>
+      <p class="muted">If any step fails, the steps after it do not run, so broken code never reaches production.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Technology stack</h2>
+      <ul class="stack">
+        <li><strong>Python</strong><small>Programming language</small></li>
+        <li><strong>Flask</strong><small>Web framework</small></li>
+        <li><strong>HTML / CSS</strong><small>Dashboard UI</small></li>
+        <li><strong>pytest</strong><small>Automated tests</small></li>
+        <li><strong>Docker</strong><small>Containerisation</small></li>
+        <li><strong>GitHub</strong><small>Source control</small></li>
+        <li><strong>GitHub Actions</strong><small>CI/CD pipeline</small></li>
+        <li><strong>Render</strong><small>Cloud hosting</small></li>
+        <li><strong>UptimeRobot</strong><small>Uptime monitoring</small></li>
+      </ul>
+    </section>
+
+    <footer class="footer">
+      {{ app_name }} · Health endpoint: <a href="/health"><code>/health</code></a>
+    </footer>
+  </main>
+
+  <script>
+    // Ask the server for its health, show the result, and repeat every 30 seconds.
+    async function checkHealth() {
+      const dot = document.getElementById("health-dot");
+      const text = document.getElementById("health-text");
+      const latency = document.getElementById("health-latency");
+      const start = performance.now();
+      try {
+        const res = await fetch("/health", { cache: "no-store" });
+        const data = await res.json();
+        const ok = res.ok && data.status === "healthy";
+        dot.className = "dot " + (ok ? "dot-ok" : "dot-bad");
+        text.textContent = ok ? "Healthy" : "Unhealthy";
+        latency.textContent = Math.round(performance.now() - start) + " ms";
+      } catch (err) {
+        dot.className = "dot dot-bad";
+        text.textContent = "Unreachable";
+        latency.textContent = "–";
+      }
+    }
+
+    // Show the start time in the visitor's local time zone, and a running uptime.
+    const startedEl = document.getElementById("started-at");
+    const startedAt = new Date(startedEl.dataset.iso);
+    startedEl.textContent = startedAt.toLocaleString();
+
+    function updateUptime() {
+      let s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      const d = Math.floor(s / 86400); s %= 86400;
+      const h = Math.floor(s / 3600); s %= 3600;
+      const m = Math.floor(s / 60);
+      document.getElementById("uptime").textContent =
+        (d ? d + "d " : "") + (h ? h + "h " : "") + m + "m";
+    }
+
+    checkHealth();
+    updateUptime();
+    setInterval(checkHealth, 30000);
+    setInterval(updateUptime, 30000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Packages for development and CI: everything the app needs, plus the test runner.
+# Kept separate so pytest is not shipped inside the production Docker image.
+-r requirements.txt
+pytest==9.2.0
