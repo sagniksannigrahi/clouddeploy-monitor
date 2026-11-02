@@ -6,7 +6,11 @@
 
 A small Flask web app that is automatically tested by GitHub Actions, shipped over SSH to an **AWS EC2** server, run in a **Docker** container, and monitored for downtime by **UptimeRobot**.
 
-> In this README, replace `<EC2_PUBLIC_IP>` with your instance's current public IPv4 address.
+**Live application:** <http://54.210.44.15> · Health check: <http://54.210.44.15/health> · Status API: <http://54.210.44.15/api/status>
+
+> The public IP `54.210.44.15` changes if the EC2 instance is stopped and started again (see section 10).
+
+**Demo guide for the presentation:** [docs/demo-guide.md](docs/demo-guide.md)
 
 ---
 
@@ -19,7 +23,7 @@ Every push to the `main` branch starts an automated pipeline:
 3. **Ship:** the code is packaged and copied to the EC2 server with `scp`.
 4. **Deploy:** the server rebuilds the image and replaces the running container.
 5. **Verify:** a health check confirms the new version works. If it doesn't, the previous version is restored automatically.
-6. **Monitor:** UptimeRobot checks `http://<EC2_PUBLIC_IP>/health` every 5 minutes and emails you if it goes down.
+6. **Monitor:** UptimeRobot checks `http://54.210.44.15/health` every 5 minutes and emails you if it goes down.
 
 ## 2. Problem statement
 
@@ -155,18 +159,21 @@ On the server, `deploy.sh` starts the container with:
 | Instance type | t3.micro (2 vCPU, 1 GB RAM) |
 | Region | us-east-1 |
 | Storage | Default 8 GB gp3 is enough |
-| Key pair | Your own key pair (keep the `.pem` file safe) |
+| Key pair | `CloudDeploy-Deploy-Key` (private key at `~/Downloads/CloudDeploy-Deploy-Key.pem`, never committed) |
+| This deployment | Instance `CloudDeploy-Monitor`, `us-east-1b`, public IP `54.210.44.15` |
 
 ### Security group (inbound rules)
 
 | Type | Port | Source | Purpose |
 |---|---|---|---|
-| SSH | 22 | See note below | Admin access and GitHub Actions deploys |
+| SSH | 22 | `0.0.0.0/0` | Admin access and GitHub Actions deploys (key-only login) |
 | HTTP | 80 | `0.0.0.0/0` | Public website and UptimeRobot |
 
 Nothing else is opened. In particular, Flask/Gunicorn's port 8080 is **not** public.
 
-> **SSH source and GitHub Actions:** GitHub-hosted runners connect from changing IP addresses. If port 22 allows only your IP, the automatic deploy step can't connect. In that case, either allow `0.0.0.0/0` on port 22 (login is key-only and password login is disabled) or deploy manually from your Mac (section 14).
+> **Why SSH is open to `0.0.0.0/0`:** GitHub-hosted runners connect from constantly changing IP addresses, so the deploy job could not connect if SSH allowed only one IP. Logging in still requires the private key. On this server, `sshd -T` shows `passwordauthentication no`, `kbdinteractiveauthentication no` and `permitrootlogin prohibit-password`.
+>
+> **Network note:** some college and office Wi-Fi networks block outgoing SSH (port 22) and intercept plain HTTP (port 80). If `ssh` times out or the site resets the connection from your laptop, switch to another network such as a phone hotspot before the demo.
 
 ### One-time server preparation
 
@@ -174,7 +181,7 @@ Run on the server over SSH. It installs only Docker Engine and the folder the ap
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker.io        # Docker Engine from Ubuntu's repository
+sudo apt-get install -y --no-install-recommends docker.io docker-buildx   # Docker Engine + build tool
 sudo systemctl enable --now docker       # start Docker now and on every boot
 sudo usermod -aG docker ubuntu           # let the ubuntu user run docker (log out/in after)
 sudo mkdir -p /opt/clouddeploy
@@ -190,8 +197,8 @@ sudo chown ubuntu:ubuntu /opt/clouddeploy
 ## 11. SSH connectivity
 
 ```bash
-chmod 400 ~/Downloads/<your-key>.pem                 # SSH refuses keys others can read
-ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP>
+chmod 400 ~/Downloads/CloudDeploy-Deploy-Key.pem                 # SSH refuses keys others can read
+ssh -i ~/Downloads/CloudDeploy-Deploy-Key.pem ubuntu@54.210.44.15
 ```
 
 The first time you connect, SSH shows the server's host key fingerprint. To confirm it is really your server, compare it with the fingerprint in **EC2 → Instance → Actions → Monitor and troubleshoot → Get system log** (look for `BEGIN SSH HOST KEY FINGERPRINTS`).
@@ -242,24 +249,21 @@ GitHub → repo → **Settings → Secrets and variables → Actions → New rep
 | `EC2_SSH_KEY` | The full contents of a **private** key allowed to log in (see below) |
 | `EC2_KNOWN_HOSTS` | The server's verified host key line (see below) |
 
-**Use a dedicated deploy key, not your personal `.pem`.** You can then revoke GitHub's access without touching your own key:
+How the secrets were set, using the GitHub CLI. Values are read from files and never printed:
 
 ```bash
-# On your Mac: create a key used only by GitHub Actions
-ssh-keygen -t ed25519 -N "" -C "github-actions-deploy" -f ~/.ssh/clouddeploy_deploy_key
-
-# Allow it to log in to the server
-ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> \
-  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/clouddeploy_deploy_key.pub
-
-# Store the secrets (values are read from files, never printed)
-gh secret set EC2_HOST --body "<EC2_PUBLIC_IP>"
+gh secret set EC2_HOST --body "54.210.44.15"
 gh secret set EC2_USER --body "ubuntu"
-gh secret set EC2_SSH_KEY < ~/.ssh/clouddeploy_deploy_key
-ssh-keyscan -t ed25519 <EC2_PUBLIC_IP> > /tmp/ec2_known_hosts
-ssh-keygen -lf /tmp/ec2_known_hosts      # compare with the EC2 system log fingerprint!
+gh secret set EC2_SSH_KEY < ~/Downloads/CloudDeploy-Deploy-Key.pem
+
+ssh-keyscan -t ed25519 54.210.44.15 > /tmp/ec2_known_hosts
+ssh-keygen -lf /tmp/ec2_known_hosts
+# → 256 SHA256:Yefe88FtDymhUghvn+77Bpj9dGm9gs93gv6zwGQlWjQ (ED25519)
+#   Compare this with EC2 → Actions → Monitor and troubleshoot → Get system log
 gh secret set EC2_KNOWN_HOSTS < /tmp/ec2_known_hosts
 ```
+
+> **Hardening option:** instead of the EC2 key pair, give GitHub a separate deploy key (`ssh-keygen -t ed25519`), add its `.pub` to `~/.ssh/authorized_keys` on the server, and store that as `EC2_SSH_KEY`. You can then revoke GitHub's access without changing your own key.
 
 How the workflow keeps the connection secure:
 
@@ -280,14 +284,14 @@ If a secret is missing, the deploy job fails with a clear message listing which 
 4. `deploy.sh` builds the new image while the old container keeps running, swaps the containers, and polls `/health` for up to 40 seconds.
    - **Healthy:** the old image is kept as a rollback target, and older ones are deleted.
    - **Unhealthy:** the new container is removed, the previous version is started again, and the job fails.
-5. The runner fetches `http://<EC2_PUBLIC_IP>/api/status` and checks that it reports the new commit.
+5. The runner fetches `http://54.210.44.15/api/status` and checks that it reports the new commit.
 
 **Manual** (from your Mac, e.g. if SSH is limited to your IP):
 
 ```bash
 git archive --format=tar.gz -o /tmp/app.tar.gz HEAD
-scp -i ~/Downloads/<your-key>.pem /tmp/app.tar.gz ubuntu@<EC2_PUBLIC_IP>:/tmp/
-ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> \
+scp -i ~/Downloads/CloudDeploy-Deploy-Key.pem /tmp/app.tar.gz ubuntu@54.210.44.15:/tmp/
+ssh -i ~/Downloads/CloudDeploy-Deploy-Key.pem ubuntu@54.210.44.15 \
   "rm -rf /opt/clouddeploy/app && mkdir -p /opt/clouddeploy/app && tar -xzf /tmp/app.tar.gz -C /opt/clouddeploy/app && cd /opt/clouddeploy/app && bash deploy.sh $(git rev-parse HEAD) main Manual"
 ```
 
@@ -307,7 +311,7 @@ The UptimeRobot free plan includes 50 monitors, 5-minute intervals, and email al
 
 1. Sign up at <https://uptimerobot.com> and verify your email.
 2. **+ New monitor** → type **HTTP(s)**.
-3. **URL:** `http://<EC2_PUBLIC_IP>/health`. **Name:** `CloudDeploy Monitor`. **Interval:** 5 minutes.
+3. **URL:** `http://54.210.44.15/health`. **Name:** `CloudDeploy Monitor`. **Interval:** 5 minutes.
 4. Under notifications, tick your **email**. You get an email when it goes down and another when it is back up.
 5. Save. The monitor turns green after the first check.
 6. Open the monitor to see **uptime %**, **response times** and the **incident history**.
@@ -318,9 +322,9 @@ The UptimeRobot free plan includes 50 monitors, 5-minute intervals, and email al
 ### Test the alert (for your demo)
 
 ```bash
-ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> "docker stop clouddeploy-monitor"
+ssh -i ~/Downloads/CloudDeploy-Deploy-Key.pem ubuntu@54.210.44.15 "docker stop clouddeploy-monitor"
 # wait 5-10 minutes → UptimeRobot marks it DOWN and emails you
-ssh -i ~/Downloads/<your-key>.pem ubuntu@<EC2_PUBLIC_IP> "docker start clouddeploy-monitor"
+ssh -i ~/Downloads/CloudDeploy-Deploy-Key.pem ubuntu@54.210.44.15 "docker start clouddeploy-monitor"
 # next check → UP email; the incident appears in the history
 ```
 
@@ -348,7 +352,7 @@ pytest -v
 | Screen | Image |
 |---|---|
 | Dashboard (local) | ![Dashboard](docs/screenshots/dashboard-local.png) |
-| Dashboard on EC2 | *add `docs/screenshots/dashboard-ec2.png`* |
+| Dashboard on EC2 | ![Dashboard on EC2](docs/screenshots/dashboard-ec2.png) |
 | GitHub Actions run | *add `docs/screenshots/github-actions.png`* |
 | `docker ps` on EC2 | *add `docs/screenshots/docker-ps.png`* |
 | UptimeRobot monitor | *add `docs/screenshots/uptimerobot.png`* |
